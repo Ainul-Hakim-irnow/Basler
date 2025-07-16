@@ -752,10 +752,9 @@ class Camera_Thread(QThread):
 
                     # Convert lists back to tensors where necessary
                     filtered_boxes = torch.stack(final_boxes) if final_boxes else torch.empty((0, 4))
-                    resized_masks = resize_and_binarize_masks(final_masks, pil_img.size)
                     final_labels = final_labels_list
                     
-                    resized_masks = resize_and_binarize_masks(filtered_masks, pil_img.size)
+                    resized_masks = resize_and_binarize_masks(final_masks, pil_img.size)
                     
                     class_colors = model_metadata_local.get("class_colors", {})
                     overlay_img = overlay_masks_boxes_labels_predict(pil_img, resized_masks, filtered_boxes, class_colors, final_labels)
@@ -767,13 +766,14 @@ class Camera_Thread(QThread):
                     
                     if detected_class_names: # Proceed only if there are detections
                         not_good_classes = self.model_settings.get("NotGood", [])
+                        good_classes = self.model_settings.get("Good", [])
                         
                         # If any detected item is in the "Not Good" list, the status is NG
                         is_ng_found = any(name in not_good_classes for name in detected_class_names)
-                        
+
                         if is_ng_found:
                             status = "NG"
-                        else:
+                        elif any(name in good_classes for name in detected_class_names):
                             status = "OK"
 
                     # 2. Draw the status label on the frame before emitting it
@@ -836,7 +836,7 @@ class Camera_Thread(QThread):
                     (0, 255, 0), # Color (green)
                     2 # Thickness
                 )
-                # self.frame_ready.emit(self.serial, output_frame)
+                self.frame_ready.emit(self.serial, output_frame)
                 
             grab.Release()
         except Exception as e: self.error.emit(self.serial, str(e))

@@ -1,5 +1,4 @@
-<!--
-    # Basler Camera
+# Basler Camera
 
     This repository contains documentation and resources related to the Basler Camera integration and usage.
 

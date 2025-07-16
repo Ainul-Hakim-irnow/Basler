@@ -651,6 +651,12 @@ class Camera_Thread(QThread):
             prev_time = time.time()
             frame_count = 0
             display_fps = 0
+            
+            font_face_fps = cv2.FONT_HERSHEY_SIMPLEX
+            font_face_status = cv2.FONT_HERSHEY_SIMPLEX
+            font_color_status = (255, 255, 255)
+            color_ok = (0, 150, 0)
+            color_ng = (0, 0, 200)
 
             while self._running and cam.IsGrabbing():
                 grab = cam.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)

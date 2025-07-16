@@ -726,13 +726,9 @@ class Camera_Thread(QThread):
                     pred = predictions[0]
                     conf = self.model_settings.get("ConfidenceThreshold", 0.5)
                     idx = pred["scores"] > conf
-                    boxes = pred["boxes"][idx]
-                    scores = pred["scores"][idx]
-                    masks = pred["masks"][idx].squeeze(1)
-                    labels_idx = pred["labels"][idx]
                     
                     filtered_boxes, filtered_scores, filtered_labels_idx, filtered_masks = filter_overlapping_detections(
-                        boxes, scores, labels_idx, masks
+                        pred["boxes"][idx], pred["scores"][idx], pred["labels"][idx], pred["masks"][idx].squeeze(1)
                     )
                     
                     class_names = model_metadata_local.get("class_names", [])
@@ -749,8 +745,7 @@ class Camera_Thread(QThread):
                         if enabled_classes.get(class_name, True): # Default to True if not found
                             final_boxes.append(filtered_boxes[i])
                             final_masks.append(filtered_masks[i])
-                            score = filtered_scores[i]
-                            final_labels_list.append(f"{class_name} {score:.2f}")
+                            final_labels_list.append(f"{class_name} {filtered_scores[i]:.2f}")
 
                     # Convert lists back to tensors where necessary
                     filtered_boxes = torch.stack(final_boxes) if final_boxes else torch.empty((0, 4))

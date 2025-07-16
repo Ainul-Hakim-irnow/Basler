@@ -23,4 +23,4 @@ This repository contains documentation and resources related to the Basler Camer
 
 ## License
 
-    See [LICENSE](./LICENSE) for details.
+See [LICENSE](./LICENSE) for details.

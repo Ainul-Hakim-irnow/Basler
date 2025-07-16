@@ -681,49 +681,49 @@ class Camera_Thread(QThread):
                     cv2.imwrite(full_res_path, full_res_frame_bgr)
                     self.image_saved.emit(self.serial, f"Saved full-res: {os.path.relpath(full_res_path)}")
                     saved_full_res_info = {"base_dir": base_dir, "timestamp": timestamp}
+                    
+                try:
+                    cam.BslContrastMode.SetValue("SCurve" if self.use_scurve else "Linear")
+                    cam.ExposureTime.SetValue(self.exposure)
+                    cam.BslBrightness.SetValue(self.brightness)
+                    cam.BslContrast.SetValue(self.contrast)
+                except Exception: 
+                    pass
                 
-                if grab.GrabSucceeded():
-                    try:
-                        cam.BslContrastMode.SetValue("SCurve" if self.use_scurve else "Linear")
-                        cam.ExposureTime.SetValue(self.exposure)
-                        cam.BslBrightness.SetValue(self.brightness)
-                        cam.BslContrast.SetValue(self.contrast)
-                    except Exception: 
-                        pass
-                
-                frame_np = fmt.Convert(grab).GetArray()
-                
-                if is_first_frame:
+                with self.model_lock:
+                    inference_enabled_local = self.inference_enabled
+                    model_local = self.model
+                    model_metadata_local = self.model_metadata
+
+                if inference_enabled_local and model_local and model_metadata_local:
+                    frame_np = fmt.Convert(grab).GetArray()
+                    # Convert and resize the frame
+                    if is_first_frame:
                         h, w, _ = frame_np.shape
                         print(f"Initial frame resolution for {self.serial}: {w}x{h}")
                         if h > 0: self.aspect_ratio = w / h
                         is_first_frame = False
                         
-                frame_np = resize_frame_based_on_resolution(frame_np, self.processing_height, self.aspect_ratio)
-                
-                # Apply Transformations
-                rot = self.transform_settings['rotate']; ud = self.transform_settings['flip_ud']; lr = self.transform_settings['flip_lr']
-                if rot == 90: frame_np = cv2.rotate(frame_np, cv2.ROTATE_90_CLOCKWISE)
-                elif rot == 180: frame_np = cv2.rotate(frame_np, cv2.ROTATE_180)
-                elif rot == -90: frame_np = cv2.rotate(frame_np, cv2.ROTATE_90_COUNTERCLOCKWISE)
-                if ud: frame_np = cv2.flip(frame_np, 0)
-                if lr: frame_np = cv2.flip(frame_np, 1)
-                
-                with self.model_lock:
-                        inference_enabled_local = self.inference_enabled
-                        model_local = self.model
-                        model_metadata_local = self.model_metadata
-
-                if inference_enabled_local and model_local and model_metadata_local:
+                    frame_np = resize_frame_based_on_resolution(frame_np, self.processing_height, self.aspect_ratio)
+                    
+                    # Transformation
+                    rot, ud, lr = self.transform_settings['rotate'], self.transform_settings['flip_ud'], self.transform_settings['flip_lr']
+                    if rot == 90: frame_np = cv2.rotate(frame_np, cv2.ROTATE_90_CLOCKWISE)
+                    elif rot == 180: frame_np = cv2.rotate(frame_np, cv2.ROTATE_180)
+                    elif rot == -90: frame_np = cv2.rotate(frame_np, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                    if ud: frame_np = cv2.flip(frame_np, 0)
+                    if lr: frame_np = cv2.flip(frame_np, 1)
+                    
+                    # Inference and overlay
                     pil_img = Image.fromarray(cv2.cvtColor(frame_np, cv2.COLOR_BGR2RGB))
                     img_tensor = F.to_tensor(pil_img).to(self.device)
-                    
                     if self.device.type == 'cuda':
                         img_tensor = img_tensor.half()
 
-                    with torch.no_grad(): predictions = self.model([img_tensor])
+                    with torch.no_grad(): 
+                        predictions = self.model([img_tensor])
+                        
                     pred = predictions[0]
-
                     conf = self.model_settings.get("ConfidenceThreshold", 0.5)
                     idx = pred["scores"] > conf
                     boxes = pred["boxes"][idx]
@@ -754,97 +754,67 @@ class Camera_Thread(QThread):
 
                     # Convert lists back to tensors where necessary
                     filtered_boxes = torch.stack(final_boxes) if final_boxes else torch.empty((0, 4))
-                    final_labels = final_labels_list
-                    
                     resized_masks = resize_and_binarize_masks(final_masks, pil_img.size)
                     
                     class_colors = model_metadata_local.get("class_colors", {})
-                    overlay_img = overlay_masks_boxes_labels_predict(pil_img, resized_masks, filtered_boxes, class_colors, final_labels)
+                    overlay_img = overlay_masks_boxes_labels_predict(pil_img, resized_masks, filtered_boxes, class_colors, final_labels_list)
                     output_frame = cv2.cvtColor(np.array(overlay_img), cv2.COLOR_RGB2BGR) # This is now our base frame to draw on
-
-                    # 1. Determine the overall status based on detected classes
-                    status = None
-                    detected_class_names = [label.split()[0] for label in final_labels]
                     
+                else:
+                    frame_np = fmt.Convert(grab).GetArray()
+                    if is_first_frame: # Ensure aspect ratio is set on first frame
+                        h, w, _ = frame_np.shape
+                        print(f"Initial frame resolution for {self.serial}: {w}x{h}")
+                        if h > 0: self.aspect_ratio = w / h
+                        is_first_frame = False
+                    output_frame = resize_frame_based_on_resolution(frame_np, self.processing_height, self.aspect_ratio)
+
+                status = None
+                if inference_enabled_local and model_local:
+                    detected_class_names = [label.split()[0] for label in final_labels_list]
                     if detected_class_names: # Proceed only if there are detections
                         not_good_classes = self.model_settings.get("NotGood", [])
                         good_classes = self.model_settings.get("Good", [])
-                        
-                        # If any detected item is in the "Not Good" list, the status is NG
-                        is_ng_found = any(name in not_good_classes for name in detected_class_names)
-
-                        if is_ng_found:
+                        if any(name in not_good_classes for name in detected_class_names):
                             status = "NG"
                         elif any(name in good_classes for name in detected_class_names):
                             status = "OK"
 
-                    # 2. Draw the status label on the frame before emitting it
-                    if status:
-                        if status == "OK":
-                            text = "OK"
-                            color = (0, 150, 0)  # Green
-                        else:  # NG
-                            text = "NG"
-                            color = (0, 0, 200)  # Red
-
-                        # Define font properties for the label
-                        font_face = cv2.FONT_HERSHEY_SIMPLEX
-                        font_scale = 1.8
-                        thickness = 3
-                        
-                        (text_w, text_h), baseline = cv2.getTextSize(text, font_face, font_scale, thickness)
-                        
-                        # Position in the top-right corner
-                        margin = 20
-                        frame_h, frame_w, _ = output_frame.shape
-                        
-                        rect_x1 = frame_w - text_w - 2 * margin
-                        rect_y1 = margin
-                        rect_x2 = frame_w - margin
-                        rect_y2 = margin + text_h + baseline + margin
-                        
-                        text_x = frame_w - text_w - margin - (margin // 2)
-                        text_y = margin + text_h + (baseline // 2)
-
-                        # Draw the filled rectangle and the text
-                        cv2.rectangle(output_frame, (rect_x1, rect_y1), (rect_x2, rect_y2), color, -1)
-                        cv2.putText(output_frame, text, (text_x, text_y), font_face, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-                else:
-                    # self.frame_ready.emit(self.serial, frame_np)
-                    output_frame = frame_np
+                if status:
+                    text = "OK" if status == "OK" else "NG"
+                    color = color_ok if status == "OK" else color_ng
+                    (text_w, text_h), baseline = cv2.getTextSize(text, font_face_status, 1.8, 3)
+                    margin = 20
+                    frame_h, frame_w, _ = output_frame.shape
+                    rect_x1, rect_y1 = frame_w - text_w - 2 * margin, margin
+                    rect_x2, rect_y2 = frame_w - margin, margin + text_h + baseline + margin
+                    text_x, text_y = frame_w - text_w - margin - (margin // 2), margin + text_h + (baseline // 2)
+                    cv2.rectangle(output_frame, (rect_x1, rect_y1), (rect_x2, rect_y2), color, -1)
+                    cv2.putText(output_frame, text, (text_x, text_y), font_face_status, 1.8, font_color_status, 3, cv2.LINE_AA)
                     
                 if folder_to_capture and self.inference_enabled:
-                    # 2. If model is ON, save the processed frame with overlay
                     info = saved_full_res_info
                     overlay_path = os.path.join(info["base_dir"], f"capture_{info['timestamp']}_overlay.png")
                     cv2.imwrite(overlay_path, output_frame)
                     self.image_saved.emit(self.serial, f"Saved overlay: {os.path.relpath(overlay_path)}")
-                    
+                
                 frame_count += 1
                 current_time = time.time()
-                elapsed_time = current_time - prev_time
-                if elapsed_time > 1.0: # Update FPS counter every second
-                    display_fps = frame_count / elapsed_time
-                    frame_count = 0
-                    prev_time = current_time
+                if (current_time - prev_time) > 1.0:
+                    display_fps = frame_count / (current_time - prev_time)
+                    prev_time, frame_count = current_time, 0
                 
-                # Draw the FPS text on the frame
-                cv2.putText(
-                    output_frame, 
-                    f"FPS: {display_fps:.2f}", 
-                    (10, 30), # Position (top-left corner)
-                    cv2.FONT_HERSHEY_SIMPLEX, 
-                    1.2, # Font scale (corresponds roughly to size 12)
-                    (0, 255, 0), # Color (green)
-                    2 # Thickness
-                )
+                cv2.putText(output_frame, f"FPS: {display_fps:.2f}", (10, 30), font_face_fps, 1.2, (0, 255, 0), 2)
                 self.frame_ready.emit(self.serial, output_frame)
                 
             grab.Release()
-        except Exception as e: self.error.emit(self.serial, str(e))
+        except Exception as e: 
+            self.error.emit(self.serial, str(e))
         finally:
-            if 'cam' in locals() and cam.IsGrabbing(): cam.StopGrabbing()
-            if 'cam' in locals() and cam.IsOpen(): cam.Close()
+            if 'cam' in locals() and cam.IsOpen():
+                if cam.IsGrabbing():
+                    cam.StopGrabbing()
+                cam.Close()
 
 class MainWindow(QMainWindow):
     def __init__(self):

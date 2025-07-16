@@ -11,9 +11,9 @@ This repository contains documentation and resources related to the Basler Camer
 
 ## Getting Started
 
-    1. Clone this repository.
-    2. Follow the setup instructions in the `docs/` or relevant files.
-    3. Run the example scripts to verify your camera connection.
+1. Clone this repository.
+2. Follow the setup instructions in the `docs/` or relevant files.
+3. 3. Run the example scripts to verify your camera connection.
 
 ## Requirements
 
